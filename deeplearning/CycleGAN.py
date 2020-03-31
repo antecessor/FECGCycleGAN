@@ -5,13 +5,12 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-from keras.layers import Input, Dropout, Concatenate, Lambda
+from keras.layers import Input, Dropout, Concatenate, Lambda, Flatten
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
 from keras.models import Model
-from keras.optimizers import Adam
+from keras.optimizers import Adam,Nadam
 from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
-import tensorflow as tf
 
 
 class CycleGAN:
@@ -23,21 +22,21 @@ class CycleGAN:
         self.img_shape = (self.img_rows, self.img_cols, self.channels)
 
         # Configure data loader
-        self.dataset_name = 'EMG2Spikes'
+        self.dataset_name = 'ECG2FECG'
 
         # Calculate output shape of D (PatchGAN)
         patch = int(self.img_rows / 2 ** 4)
-        self.disc_patch = (patch, 1, 1)
+        self.disc_patch = (1, 63, 1)
 
         # Number of filters in the first layer of G and D
         self.gf = 6
         self.df = 12
 
         # Loss weights
-        self.lambda_cycle = 10.0  # Cycle-consistency loss
-        self.lambda_id = 0.1 * self.lambda_cycle  # Identity loss
+        self.lambda_cycle = 1.0  # Cycle-consistency loss
+        self.lambda_id = 0.4 * self.lambda_cycle  # Identity loss
 
-        optimizer = Adam(0.0002, 0.5)
+        optimizer = Nadam(0.0002, 0.5)
 
         # Build and compile the discriminators
         self.d_A = self.build_discriminator()
@@ -55,8 +54,8 @@ class CycleGAN:
         # -------------------------
 
         # Build the generators
-        self.g_AB = self.build_generator("softsign")
-        self.g_BA = self.build_generator("tanh")
+        self.g_AB = self.build_generator("relu")
+        self.g_BA = self.build_generator("relu")
 
         # Input images from both domains
         img_A = Input(shape=self.img_shape)
@@ -85,7 +84,7 @@ class CycleGAN:
                               outputs=[valid_A, valid_B,
                                        reconstr_A, reconstr_B,
                                        img_A_id, img_B_id])
-        self.combined.compile(loss=['mse', 'mse',
+        self.combined.compile(loss=['mae', 'mae',
                                     'mae', 'mae',
                                     'mae', 'mae'],
                               loss_weights=[1, 1,
@@ -102,11 +101,6 @@ class CycleGAN:
             d = LeakyReLU(alpha=0.2)(d)
             d = InstanceNormalization()(d)
             return d
-
-        def counting(args):
-            input = args
-            var = tf.reduce_sum(input, axis=3, keepdims=True) / tf.reduce_max(input)
-            return var
 
         def deconv2d(layer_input, skip_input, filters, f_size=3, dropout_rate=0):
             """Layers used during upsampling"""
@@ -129,7 +123,7 @@ class CycleGAN:
         u3 = deconv2d(d2, d1, self.gf)
 
         u4 = UpSampling2D()(u3)
-        u5 = Lambda(counting, name='z')(u4)
+        u5 = Conv2D(1, 3, padding="same")(u4)
         output_img = Conv2D(self.channels, kernel_size=3, strides=1, padding='same', activation=outputLayer)(u5)
 
         return Model(d0, output_img)
@@ -166,8 +160,8 @@ class CycleGAN:
         for epoch in range(epochs):
             for batch_i, imgs_A in enumerate(x_train):
                 imgs_B = y_train[batch_i]
-                imgs_B = np.reshape(imgs_B, (-1, 256, 12, 1))
-                imgs_A = np.reshape(imgs_A, (-1, 256, 12, 1))
+                imgs_B = np.reshape(imgs_B, (-1, x_train.shape[1], x_train.shape[2], 1))
+                imgs_A = np.reshape(imgs_A, (-1, x_train.shape[1], x_train.shape[2], 1))
                 # ----------------------
                 #  Train Discriminators
                 # ----------------------
@@ -214,8 +208,8 @@ class CycleGAN:
                 # If at save interval => save generated image samples
                 if batch_i % sample_interval == 0:
                     self.sample_images(epoch, batch_i, imgs_A, imgs_B)
-        self.g_AB.save("EMG2Spikes.h5", overwrite=True)
-        self.g_BA.save("Spikes2EMG.h5", overwrite=True)
+        self.g_AB.save("ECG2FECG.h5", overwrite=True)
+        self.g_BA.save("FECG2ECG.h5", overwrite=True)
 
     def sample_images(self, epoch, batch_i, imgs_A, imgs_B):
         os.makedirs('images/%s' % self.dataset_name, exist_ok=True)
@@ -242,10 +236,10 @@ class CycleGAN:
         cnt = 0
         for i in range(r):
             for j in range(c):
-                for bias in range(12):
+                for bias in range(4):
                     if i == 0 and j == 1:
-                        gen_imgs[cnt][:, bias, 0] = np.abs(gen_imgs[cnt][:, bias, 0])
-                    axs[i, j].plot(gen_imgs[cnt][:, bias, 0] / np.max(gen_imgs[cnt][:, bias, 0]) + bias)
+                        gen_imgs[cnt][bias, :, 0] = np.abs(gen_imgs[cnt][bias, :, 0])
+                    axs[i, j].plot(gen_imgs[cnt][bias, :, 0] / np.max(gen_imgs[cnt][bias, :, 0]) + bias)
                 axs[i, j].set_title(titles[j])
                 cnt += 1
         fig.savefig("images/%s/%d_%d.png" % (self.dataset_name, epoch, batch_i))
