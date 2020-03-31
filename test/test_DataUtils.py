@@ -12,4 +12,7 @@ class TestDataUtils(TestCase):
         ecg, fecg = self.dataUtils.readData(0)
         self.assertIsNotNone(ecg)
 
-
+    def test_addRepetitionDelay(self):
+        ecg, fecg = self.dataUtils.readData(0)
+        fecgDelayed = self.dataUtils.createDelayRepetition(fecg, 4, 5)
+        self.assertIsNotNone(fecgDelayed)

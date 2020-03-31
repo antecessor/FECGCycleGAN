@@ -13,14 +13,14 @@ class DataUtils:
         f = pyedflib.EdfReader(file_name)
         n = f.signals_in_file
         # signal_labels = f.getSignalLabels()
-        abdECG = np.zeros((n, f.getNSamples()[0]))
+        abdECG = np.zeros((n - 1, f.getNSamples()[0]))
         fetalECG = np.zeros((1, f.getNSamples()[0]))
+        fetalECG[0, :] = f.readSignal(0)
         for i in np.arange(1, n):
-            abdECG[i, :] = f.readSignal(i)
-        fetalECG[0, :] = f.readsignal(0)
+            abdECG[i - 1, :] = f.readSignal(i)
         return abdECG, fetalECG
 
-    def windowingSig(sig, labels, windowSize=15):
+    def windowingSig(self, sig, labels, windowSize=15):
         signalLen = labels.shape[1]
         if len(labels.shape) == 1:
             labelsWindow = [labels[int(i):int(i + windowSize)].transpose() for i in range(0, signalLen - 1, windowSize)]
@@ -29,3 +29,9 @@ class DataUtils:
         signalsWindow = [sig[:, int(i):int(i + windowSize)].transpose() for i in range(0, signalLen - windowSize, windowSize)]
 
         return signalsWindow, labelsWindow
+
+    def createDelayRepetition(self, signal, numberDelay=4, delay=10):
+        signal = np.repeat(signal, numberDelay, axis=0)
+        for row in range(1, signal.shape[0]):
+            signal[row,:] = np.roll(signal[row,:], shift=delay * row)
+        return signal
