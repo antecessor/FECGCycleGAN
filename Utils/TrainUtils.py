@@ -18,7 +18,7 @@ class TrainUtils:
             ecgAll = np.append(ecgAll, ecg, axis=1)
             fecgAll = np.append(fecgAll, fecgDelayed, axis=1)
 
-        ecgWindows, fecgWindows = self.dataUtils.windowingSig(ecgAll, fecgAll, windowSize=1000)
+        ecgWindows, fecgWindows = self.dataUtils.windowingSig(ecgAll, fecgAll, windowSize=200)
         return ecgWindows, fecgWindows
 
     def trainTestSplit(self, sig, label, trainPercent, shuffle=True):

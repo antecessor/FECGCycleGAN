@@ -5,46 +5,52 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-from keras.layers import Input, Dropout, Concatenate, Lambda, Flatten
+from keras.layers import Input, Dropout, Concatenate, Lambda, Flatten, GRU, LSTM
 from keras.layers.advanced_activations import LeakyReLU
-from keras.layers.convolutional import UpSampling2D, Conv2D
+from keras.layers.convolutional import UpSampling2D, Conv2D, Conv1D, UpSampling1D
 from keras.models import Model
-from keras.optimizers import Adam,Nadam
+from keras.optimizers import Adam, Nadam, RMSprop
 from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
+import keras.backend as K
+from sklearn.preprocessing import scale
+
+from Utils.DataUtils import DataUtils
+from deeplearning.AttentionDecoder import AttentionDecoder
 
 
 class CycleGAN:
     def __init__(self, row, col):
         # Input shape
+        self.dataUtils = DataUtils()
         self.img_rows = row
         self.img_cols = col
         self.channels = 1
-        self.img_shape = (self.img_rows, self.img_cols, self.channels)
+        self.img_shape = (self.img_rows, self.img_cols)
 
         # Configure data loader
         self.dataset_name = 'ECG2FECG'
 
         # Calculate output shape of D (PatchGAN)
         patch = int(self.img_rows / 2 ** 4)
-        self.disc_patch = (1, 63, 1)
+        self.disc_patch = (200, 1)
 
         # Number of filters in the first layer of G and D
         self.gf = 6
         self.df = 12
 
         # Loss weights
-        self.lambda_cycle = 1.0  # Cycle-consistency loss
-        self.lambda_id = 0.4 * self.lambda_cycle  # Identity loss
+        self.lambda_cycle = 10.0  # Cycle-consistency loss
+        self.lambda_id = 0.2 * self.lambda_cycle  # Identity loss
 
-        optimizer = Nadam(0.0002, 0.5)
+        optimizer = Nadam()
 
         # Build and compile the discriminators
         self.d_A = self.build_discriminator()
         self.d_B = self.build_discriminator()
-        self.d_A.compile(loss='mse',
+        self.d_A.compile(loss='mae',
                          optimizer=optimizer,
                          metrics=['accuracy'])
-        self.d_B.compile(loss='mse',
+        self.d_B.compile(loss='mae',
                          optimizer=optimizer,
                          metrics=['accuracy'])
 
@@ -84,28 +90,38 @@ class CycleGAN:
                               outputs=[valid_A, valid_B,
                                        reconstr_A, reconstr_B,
                                        img_A_id, img_B_id])
-        self.combined.compile(loss=['mae', 'mae',
-                                    'mae', 'mae',
-                                    'mae', 'mae'],
+        self.combined.compile(loss=[self.custom_loss(), self.custom_loss(),
+                                    self.custom_loss(), self.custom_loss(),
+                                    self.custom_loss(), self.custom_loss()],
                               loss_weights=[1, 1,
                                             self.lambda_cycle, self.lambda_cycle,
                                             self.lambda_id, self.lambda_id],
                               optimizer=optimizer)
+
+    # Define custom loss
+    def custom_loss(self):
+
+        # Create a loss function that adds the MSE loss to the mean of all squared activations of a specific layer
+        def loss(y_true, y_pred):
+            return K.mean(K.abs(y_pred - y_true), axis=-1)
+
+        # Return a function
+        return loss
 
     def build_generator(self, outputLayer="sigmoid"):
         """U-Net Generator"""
 
         def conv2d(layer_input, filters, f_size=3):
             """Layers used during downsampling"""
-            d = Conv2D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
+            d = Conv1D(filters, kernel_size=f_size, padding='same')(layer_input)
             d = LeakyReLU(alpha=0.2)(d)
             d = InstanceNormalization()(d)
             return d
 
         def deconv2d(layer_input, skip_input, filters, f_size=3, dropout_rate=0):
             """Layers used during upsampling"""
-            u = UpSampling2D(size=2)(layer_input)
-            u = Conv2D(filters, kernel_size=f_size, strides=1, padding='same', activation='relu')(u)
+            u = UpSampling1D()(layer_input)
+            u = Conv1D(filters, kernel_size=f_size, strides=2, padding='same', activation='sigmoid')(u)
             if dropout_rate:
                 u = Dropout(dropout_rate)(u)
             u = InstanceNormalization()(u)
@@ -115,16 +131,17 @@ class CycleGAN:
         # Image input
         d0 = Input(shape=self.img_shape)
 
-        # Downsampling
+        # # Downsampling
         d1 = conv2d(d0, self.gf)
-        d2 = conv2d(d1, self.gf * 3)
+        # d2 = GRU(16, return_sequences=True)(d1)
 
+        d3 = AttentionDecoder(32, 16)(d1)
         # Upsampling
-        u3 = deconv2d(d2, d1, self.gf)
-
-        u4 = UpSampling2D()(u3)
-        u5 = Conv2D(1, 3, padding="same")(u4)
-        output_img = Conv2D(self.channels, kernel_size=3, strides=1, padding='same', activation=outputLayer)(u5)
+        u3 = deconv2d(d3, d1, self.gf)
+        # u2 = deconv2d(u3, d3, self.gf)
+        # u4 = GRU(16, return_sequences=True)(u3)
+        # output_img = Conv2D(1, 3, padding="same",str activation=outputLayer)(u4)
+        output_img = Conv1D(4, kernel_size=2, padding='same', activation=outputLayer)(u3)
 
         return Model(d0, output_img)
 
@@ -132,7 +149,7 @@ class CycleGAN:
 
         def d_layer(layer_input, filters, f_size=4, normalization=True):
             """Discriminator layer"""
-            d = Conv2D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
+            d = Conv1D(filters, kernel_size=f_size, padding='same')(layer_input)
             d = LeakyReLU(alpha=0.2)(d)
             if normalization:
                 d = InstanceNormalization()(d)
@@ -145,11 +162,11 @@ class CycleGAN:
         d3 = d_layer(d2, self.df * 4)
         d4 = d_layer(d3, self.df * 8)
 
-        validity = Conv2D(1, kernel_size=4, strides=1, padding='same')(d4)
+        validity = Conv1D(1, kernel_size=4, padding='same')(d4)
 
         return Model(img, validity)
 
-    def train(self, x_train, y_train, epochs, batch_size=1, sample_interval=50):
+    def train(self, x_train, y_train, epochs, batch_size=1, sample_interval=20):
 
         start_time = datetime.datetime.now()
 
@@ -160,8 +177,8 @@ class CycleGAN:
         for epoch in range(epochs):
             for batch_i, imgs_A in enumerate(x_train):
                 imgs_B = y_train[batch_i]
-                imgs_B = np.reshape(imgs_B, (-1, x_train.shape[1], x_train.shape[2], 1))
-                imgs_A = np.reshape(imgs_A, (-1, x_train.shape[1], x_train.shape[2], 1))
+                imgs_B = np.reshape(imgs_B, (-1, x_train.shape[1], x_train.shape[2]))
+                imgs_A = np.reshape(imgs_A, (-1, x_train.shape[1], x_train.shape[2]))
                 # ----------------------
                 #  Train Discriminators
                 # ----------------------
@@ -237,9 +254,8 @@ class CycleGAN:
         for i in range(r):
             for j in range(c):
                 for bias in range(4):
-                    if i == 0 and j == 1:
-                        gen_imgs[cnt][bias, :, 0] = np.abs(gen_imgs[cnt][bias, :, 0])
-                    axs[i, j].plot(gen_imgs[cnt][bias, :, 0] / np.max(gen_imgs[cnt][bias, :, 0]) + bias)
+                    gen_imgs[cnt][:, bias] = scale(self.dataUtils.butter_bandpass_filter(gen_imgs[cnt][:, bias], 10, 50, 200, axis =0), axis=0)
+                    axs[i, j].plot(gen_imgs[cnt][:, bias] / np.max(gen_imgs[cnt][:, bias]) + bias)
                 axs[i, j].set_title(titles[j])
                 cnt += 1
         fig.savefig("images/%s/%d_%d.png" % (self.dataset_name, epoch, batch_i))
