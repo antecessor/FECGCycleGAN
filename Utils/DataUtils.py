@@ -4,6 +4,7 @@ from scipy import signal
 from scipy.signal import butter, filtfilt
 from sklearn.decomposition import FastICA
 from sklearn.preprocessing import scale
+import padasip as pa
 
 
 class DataUtils:
@@ -36,18 +37,28 @@ class DataUtils:
 
         return signalsWindow1, signalsWindow2
 
-    def calculateICA(self, sdSig, labels, component=7):
-        ica = FastICA(n_components=component, max_iter=1000)
-        icaRes = []
-        labelNew = []
-        for index, sig in enumerate(sdSig):
+    def adaptFilterOnSig(self, src, ref):
+        f = pa.filters.FilterNLMS(n=4, mu=0.1, w="random")
+        for index, sig in enumerate(src):
             try:
-                if labels[index].shape[0] == component and labels[index].shape[1] == sdSig[0].shape[1]:
-                    icaRes.append(np.array(ica.fit_transform(sig.transpose())).transpose())
-                    labelNew.append(labels[index])
+                y, e, w = f.run(ref[index][:, 0], sig)
+                ref[index][:, 0] = e
             except:
                 pass
-        return np.array(icaRes), np.array(labelNew)
+
+        return ref
+
+    def calculateICA(self, sdSig, component=7):
+        ica = FastICA(n_components=component, max_iter=1000)
+        icaRes = []
+        for index, sig in enumerate(sdSig):
+            try:
+                icaSignal = np.array(ica.fit_transform(sig))
+                icaSignal = np.append(icaSignal, sig[:, range(2, 4)], axis=1)
+                icaRes.append(icaSignal)
+            except:
+                pass
+        return np.array(icaRes)
 
     def createDelayRepetition(self, signal, numberDelay=4, delay=10):
         signal = np.repeat(signal, numberDelay, axis=0)

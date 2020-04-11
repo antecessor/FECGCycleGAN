@@ -5,14 +5,16 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-from keras.layers import Input, Dropout, Concatenate, Lambda, Flatten, GRU, LSTM
-from keras.layers.advanced_activations import LeakyReLU
+from keras.layers import Input, Dropout, Concatenate, Lambda, Flatten, GRU, LSTM, Dense, Reshape, Subtract, RepeatVector, Multiply, Activation
+from keras.layers.advanced_activations import LeakyReLU, ThresholdedReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D, Conv1D, UpSampling1D
 from keras.models import Model
 from keras.optimizers import Adam, Nadam, RMSprop
 from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
 import keras.backend as K
+from sklearn.decomposition import FastICA
 from sklearn.preprocessing import scale
+from tensorflow import convert_to_tensor, float32
 
 from Utils.DataUtils import DataUtils
 from deeplearning.AttentionDecoder import AttentionDecoder
@@ -39,18 +41,18 @@ class CycleGAN:
         self.df = 12
 
         # Loss weights
-        self.lambda_cycle = 10.0  # Cycle-consistency loss
-        self.lambda_id = 0.2 * self.lambda_cycle  # Identity loss
+        self.lambda_cycle = 4.0  # Cycle-consistency loss
+        self.lambda_id = 0.01 * self.lambda_cycle  # Identity loss
 
         optimizer = Nadam()
 
         # Build and compile the discriminators
         self.d_A = self.build_discriminator()
         self.d_B = self.build_discriminator()
-        self.d_A.compile(loss='mae',
+        self.d_A.compile(loss='mse',
                          optimizer=optimizer,
                          metrics=['accuracy'])
-        self.d_B.compile(loss='mae',
+        self.d_B.compile(loss='mse',
                          optimizer=optimizer,
                          metrics=['accuracy'])
 
@@ -60,8 +62,8 @@ class CycleGAN:
         # -------------------------
 
         # Build the generators
-        self.g_AB = self.build_generator("relu")
-        self.g_BA = self.build_generator("relu")
+        self.g_AB = self.build_generator("tanh")
+        self.g_BA = self.build_generator("tanh")
 
         # Input images from both domains
         img_A = Input(shape=self.img_shape)
@@ -88,11 +90,11 @@ class CycleGAN:
         # Combined model trains generators to fool discriminators
         self.combined = Model(inputs=[img_A, img_B],
                               outputs=[valid_A, valid_B,
-                                       reconstr_A, reconstr_B,
-                                       img_A_id, img_B_id])
-        self.combined.compile(loss=[self.custom_loss(), self.custom_loss(),
-                                    self.custom_loss(), self.custom_loss(),
-                                    self.custom_loss(), self.custom_loss()],
+                                       fake_B, fake_A,
+                                       reconstr_A, reconstr_B])
+        self.combined.compile(loss=['mse', 'mse',
+                                    'mae', 'mae',
+                                    'mae', 'mae'],
                               loss_weights=[1, 1,
                                             self.lambda_cycle, self.lambda_cycle,
                                             self.lambda_id, self.lambda_id],
@@ -103,46 +105,71 @@ class CycleGAN:
 
         # Create a loss function that adds the MSE loss to the mean of all squared activations of a specific layer
         def loss(y_true, y_pred):
-            return K.mean(K.abs(y_pred - y_true), axis=-1)
+            return K.mean(y_true * K.log(y_true / y_pred + K.epsilon()))
 
         # Return a function
         return loss
 
-    def build_generator(self, outputLayer="sigmoid"):
+    def build_generator(self, outputLayer="relu"):
         """U-Net Generator"""
 
-        def conv2d(layer_input, filters, f_size=3):
+        def conv2d(layer_input, filters, f_size=7):
             """Layers used during downsampling"""
             d = Conv1D(filters, kernel_size=f_size, padding='same')(layer_input)
             d = LeakyReLU(alpha=0.2)(d)
-            d = InstanceNormalization()(d)
+            # d = InstanceNormalization()(d)
             return d
 
-        def deconv2d(layer_input, skip_input, filters, f_size=3, dropout_rate=0):
+        def deconv2d(layer_input, skip_input, filters, f_size=7, dropout_rate=0):
             """Layers used during upsampling"""
             u = UpSampling1D()(layer_input)
-            u = Conv1D(filters, kernel_size=f_size, strides=2, padding='same', activation='sigmoid')(u)
+            u = Conv1D(filters, kernel_size=f_size, strides=2, padding='same')(u)
+            u = LeakyReLU(alpha=0.2)(u)
             if dropout_rate:
                 u = Dropout(dropout_rate)(u)
-            u = InstanceNormalization()(u)
-            u = Concatenate()([u, skip_input])
+            # u = InstanceNormalization()(u)
+            # u = Concatenate()([u, skip_input])
             return u
+
+        def multiply(x):
+            image, mask = x
+            # mask = K.expand_dims(mask, axis=-1)  # could be K.stack([mask]*3, axis=-1) too
+            return mask * image
 
         # Image input
         d0 = Input(shape=self.img_shape)
-
+        shape = K.int_shape(d0)
+        # dauto = Lambda(autoCorr)(d0)
         # # Downsampling
-        d1 = conv2d(d0, self.gf)
-        # d2 = GRU(16, return_sequences=True)(d1)
+        d1 = conv2d(d0, 4)
+        d2 = conv2d(d1, 2)
+        d3 = conv2d(d2, 1)
+        # d3_1 = conv2d(d0, 4)
+        # d2 = GRU(64, return_sequences=True)(d3)
+        x = Flatten()(d3)
+        mask = Dense(50)(x)
+        mask = UpSampling1D(4)(mask)
+        mask = ThresholdedReLU(theta=.5)(mask)
+        x2 = Concatenate()([mask, mask, mask, mask])
+        u2 = Reshape((shape[1], shape[2]))(x2)
 
-        d3 = AttentionDecoder(32, 16)(d1)
+        # subtracted = Subtract()([x1, x2])
+        # u2 = Conv1D(4, 5, activation="sigmoid", padding='same')(u2)
+
+        dmul = Lambda(multiply)([u2, d0])
+
+        # d3 = AttentionDecoder(32, 16)(d0)
         # Upsampling
-        u3 = deconv2d(d3, d1, self.gf)
+
+        u4 = deconv2d(dmul, u2, 4)
         # u2 = deconv2d(u3, d3, self.gf)
         # u4 = GRU(16, return_sequences=True)(u3)
         # output_img = Conv2D(1, 3, padding="same",str activation=outputLayer)(u4)
-        output_img = Conv1D(4, kernel_size=2, padding='same', activation=outputLayer)(u3)
+        u4 = InstanceNormalization()(u4)
+        u4 = Conv1D(4, kernel_size=7, padding='same', activation='relu')(u4)
+        output_img = Conv1D(4, kernel_size=7, padding='same', activation=outputLayer)(u4)
 
+        # output_img = Conv1D(4, kernel_size=2, padding='same', activation=outputLayer)(output_img)
         return Model(d0, output_img)
 
     def build_discriminator(self):
@@ -158,11 +185,10 @@ class CycleGAN:
         img = Input(shape=self.img_shape)
 
         d1 = d_layer(img, self.df, normalization=False)
-        d2 = d_layer(d1, self.df * 2)
-        d3 = d_layer(d2, self.df * 4)
-        d4 = d_layer(d3, self.df * 8)
+        d2 = d_layer(d1, 2)
+        d3 = d_layer(d2, 2)
 
-        validity = Conv1D(1, kernel_size=4, padding='same')(d4)
+        validity = Conv1D(1, kernel_size=4, padding='same')(d3)
 
         return Model(img, validity)
 
@@ -206,7 +232,7 @@ class CycleGAN:
                 # Train the generators
                 g_loss = self.combined.train_on_batch([imgs_A, imgs_B],
                                                       [valid, valid,
-                                                       imgs_A, imgs_B,
+                                                       imgs_B, imgs_A,
                                                        imgs_A, imgs_B])
 
                 elapsed_time = datetime.datetime.now() - start_time
@@ -251,12 +277,19 @@ class CycleGAN:
         titles = ['Original', 'Translated', 'Reconstructed']
         fig, axs = plt.subplots(r, c)
         cnt = 0
-        for i in range(r):
-            for j in range(c):
-                for bias in range(4):
-                    gen_imgs[cnt][:, bias] = scale(self.dataUtils.butter_bandpass_filter(gen_imgs[cnt][:, bias], 10, 50, 200, axis =0), axis=0)
-                    axs[i, j].plot(gen_imgs[cnt][:, bias] / np.max(gen_imgs[cnt][:, bias]) + bias)
-                axs[i, j].set_title(titles[j])
-                cnt += 1
-        fig.savefig("images/%s/%d_%d.png" % (self.dataset_name, epoch, batch_i))
-        plt.close()
+
+        # gen_imgs[1] = gen_imgs[0]-gen_imgs[1]
+        try:
+            for i in range(r):
+                for j in range(c):
+                    for bias in range(4):
+                        gen_imgs[cnt][:, bias] = scale(self.dataUtils.butter_bandpass_filter(gen_imgs[cnt][:, bias], 10, 50, 200, axis=0), axis=0)
+                        if np.max(gen_imgs[cnt][:, bias]) != 0:
+                            gen_imgs[cnt][:, bias] = gen_imgs[cnt][:, bias] / np.max(gen_imgs[cnt][:, bias])
+                        axs[i, j].plot(gen_imgs[cnt][:, bias] + bias)
+                    axs[i, j].set_title(titles[j])
+                    cnt += 1
+            fig.savefig("images/%s/%d_%d.png" % (self.dataset_name, epoch, batch_i))
+            plt.close()
+        except:
+            pass

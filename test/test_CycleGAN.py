@@ -21,4 +21,4 @@ class TestCycleGAN(TestCase):
         # y_test = np.reshape(Y_test, [-1, Y_test.shape[1], Y_test.shape[2], 1])
 
         cycleGAN = CycleGAN(Y_train.shape[1], Y_train.shape[2])
-        cycleGAN.train(x_train=X_train, y_train=Y_train, epochs=1)
+        cycleGAN.train(x_train=X_train, y_train=Y_train, epochs=5)
