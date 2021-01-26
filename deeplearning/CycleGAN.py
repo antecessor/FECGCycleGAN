@@ -22,7 +22,7 @@ from Utils.DataUtils import DataUtils
 
 
 class TransformerBlock(Layer):
-    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
+    def __init__(self, embed_dim, num_heads, rate=0.1):
         super(TransformerBlock, self).__init__()
         self.att = MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
         # self.ffn = Sequential(
@@ -98,8 +98,8 @@ class CycleGAN:
         # -------------------------
 
         # Build the generators
-        self.g_AB = self.build_generator("relu")
-        self.g_BA = self.build_generator("relu")
+        self.g_AB = self.build_generator()
+        self.g_BA = self.build_generator()
 
         # Input images from both domains
         img_A = Input(shape=self.img_shape)
@@ -146,10 +146,10 @@ class CycleGAN:
         # Return a function
         return loss
 
-    def build_generator(self, outputLayer="relu"):
+    def build_generator(self):
         """U-Net Generator"""
 
-        def conv1DWithLeakyRelu(layer_input, filters, f_size=7):
+        def conv1DWithSINE(layer_input, filters, f_size=7):
             """Layers used during downsampling"""
             d = Conv1D(filters, kernel_size=f_size, padding='same', activation=tf.math.sin)(layer_input)
             d = InstanceNormalization()(d)
@@ -157,39 +157,23 @@ class CycleGAN:
 
         def multiply(x):
             mask,image  = x
-            # mask = K.expand_dims(mask, axis=-1)  # could be K.stack([mask]*3, axis=-1) too
             return image* K.clip(mask,0.8,1)
 
-        def difference(x):
-            image, mask = x
-            # mask = K.expand_dims(mask, axis=-1)  # could be K.stack([mask]*3, axis=-1) too
-            return image - mask
-
-        def reshapeFunc(x):
-            return K.reshape(x, [-1, 200, 1])
-
         input = Input(shape=self.img_shape)
-        # value = Lambda(reshapeTo)(input)
-        value = conv1DWithLeakyRelu(input, 1, f_size=30)
-        # lstm = Bidirectional(LSTM(units=8, return_sequences=True))(input)
-        # lstm = conv1DWithLeakyRelu(lstm, 4)
-        # lstm = conv1DWithLeakyRelu(lstm, 1)
 
-        att = TransformerBlock(200, 2, 8)(value)
+        value = conv1DWithSINE(input, 1, f_size=30)
+
+
+        att = TransformerBlock(200, 2)(value)
         att = Normalization(axis=1)(att)
-        # mask = LeakyReLU(0.9)(att)
+
         remainedInput = Lambda(multiply)([att, value])
-        # remainedInput = GlobalAveragePooling1D()(remainedInput)
-        # remainedInput = Lambda(reshapeFunc)(remainedInput)
-        # value = Lambda(difference)([remainedInput, input])
-        output_img = conv1DWithLeakyRelu(remainedInput, 13, f_size=3)
-        output_img = conv1DWithLeakyRelu(output_img, 7, f_size=5)
-        output_img = conv1DWithLeakyRelu(output_img, 5, f_size=13)
-        output_img = conv1DWithLeakyRelu(output_img, 1, f_size=3)
 
-        # output_img = Lambda(multiply)([mask, value])
+        output_img = conv1DWithSINE(remainedInput, 13, f_size=3)
+        output_img = conv1DWithSINE(output_img, 7, f_size=5)
+        output_img = conv1DWithSINE(output_img, 5, f_size=13)
+        output_img = conv1DWithSINE(output_img, 1, f_size=3)
 
-        # output_img = Conv1D(4, kernel_size=2, padding='same', activation=outputLayer)(output_img)
         return Model(input, output_img)
 
     def build_discriminator(self):
@@ -200,8 +184,7 @@ class CycleGAN:
             if normalization:
                 d = InstanceNormalization()(d)
             return d
-        def activationCustom(x):
-            return K.reshape(x, [-1, 200, 1])
+
         img = Input(shape=self.img_shape)
 
         d1 = d_layer(img, self.df)
