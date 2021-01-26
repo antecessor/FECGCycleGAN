@@ -13,7 +13,7 @@ class DataUtils:
         super().__init__()
         self.fileNames = ["r01.edf", "r04.edf", "r07.edf", "r08.edf", "r10.edf"]
 
-    def readData(self, sigNum, path="E:\Workspaces\ECG2FetalCycleGAN\\abdominal-and-direct-fetal-ecg-database-1.0.0\\"):
+    def readData(self, sigNum, path="E:\\Workspaces\\ECG2FetalCycleGAN\\abdominal-and-direct-fetal-ecg-database-1.0.0\\"):
         file_name = path + self.fileNames[sigNum]
         f = pyedflib.EdfReader(file_name)
         n = f.signals_in_file
@@ -21,10 +21,10 @@ class DataUtils:
         abdECG = np.zeros((n - 1, f.getNSamples()[0]))
         fetalECG = np.zeros((1, f.getNSamples()[0]))
         fetalECG[0, :] = f.readSignal(0)
-        fetalECG[0, :] = scale(self.butter_bandpass_filter(fetalECG, 10, 50, 1000), axis=1)
+        fetalECG[0, :] = scale(self.butter_bandpass_filter(fetalECG, 1, 100, 1000), axis=1)
         for i in np.arange(1, n):
             abdECG[i - 1, :] = f.readSignal(i)
-        abdECG = scale(self.butter_bandpass_filter(abdECG, 10, 50, 1000), axis=1)
+        abdECG = scale(self.butter_bandpass_filter(abdECG, 1, 100, 1000), axis=1)
 
         abdECG = signal.resample(abdECG, int(abdECG.shape[1] / 5), axis=1)
         fetalECG = signal.resample(fetalECG, int(fetalECG.shape[1] / 5), axis=1)

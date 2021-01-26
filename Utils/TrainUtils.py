@@ -9,15 +9,17 @@ class TrainUtils:
         super().__init__()
         self.dataUtils = DataUtils()
 
-    def prepareData(self, delayNum=4, delay=5):
+    def prepareData(self, delay=5):
         ecgAll, fecg = self.dataUtils.readData(0)
+        ecgAll = ecgAll[range(1), :]
+        delayNum = ecgAll.shape[0]
         fecgAll = self.dataUtils.createDelayRepetition(fecg, delayNum, delay)
-        for i in range(1, 5):
+        for i in range(1, 2):
             ecg, fecg = self.dataUtils.readData(i)
+            ecg = ecg[range(1), :]
             fecgDelayed = self.dataUtils.createDelayRepetition(fecg, delayNum, delay)
             ecgAll = np.append(ecgAll, ecg, axis=1)
             fecgAll = np.append(fecgAll, fecgDelayed, axis=1)
-
 
         ecgWindows, fecgWindows = self.dataUtils.windowingSig(ecgAll, fecgAll, windowSize=200)
         # fecgWindows = self.dataUtils.adaptFilterOnSig(ecgWindows, fecgWindows)

@@ -5,23 +5,59 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-from keras.layers import Input, Dropout, Concatenate, Lambda, Flatten, GRU, LSTM, Dense, Reshape, Subtract, RepeatVector, Multiply, Activation
-from keras.layers.advanced_activations import LeakyReLU, ThresholdedReLU
-from keras.layers.convolutional import UpSampling2D, Conv2D, Conv1D, UpSampling1D
-from keras.models import Model
-from keras.optimizers import Adam, Nadam, RMSprop
-from keras_contrib.layers.normalization.instancenormalization import InstanceNormalization
 import keras.backend as K
-from sklearn.decomposition import FastICA
+from keras import Input, Model
+from keras.layers import Conv1D, UpSampling1D, LeakyReLU, Dropout, Lambda, Embedding, Bidirectional, LSTM, Dense, Flatten, Layer, MultiHeadAttention, LayerNormalization, GlobalAveragePooling1D
+from keras.optimizers import Nadam
+from keras_contrib.layers import InstanceNormalization
+from keras_self_attention import ScaledDotProductAttention
+from keras_self_attention.backend import regularizers
 from sklearn.preprocessing import scale
-from tensorflow import convert_to_tensor, float32
+
+import tensorflow as tf
+from tensorflow.python.keras import Sequential
+from tensorflow.python.keras.layers import Normalization
 
 from Utils.DataUtils import DataUtils
-from deeplearning.AttentionDecoder import AttentionDecoder
+
+
+class TransformerBlock(Layer):
+    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
+        super(TransformerBlock, self).__init__()
+        self.att = MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
+        # self.ffn = Sequential(
+        #     [Dense(ff_dim, activation="relu"), Dense(embed_dim), ]
+        # )
+        self.layernorm1 = LayerNormalization(epsilon=1e-6)
+        # self.layernorm2 = LayerNormalization(epsilon=1e-6)
+        self.dropout1 = Dropout(rate)
+        # self.dropout2 = Dropout(rate)
+
+    def call(self, inputs):
+        attn_output = self.att(inputs, inputs)
+        attn_output = self.dropout1(attn_output)
+        out1 = self.layernorm1(inputs * attn_output)
+        # ffn_output = self.ffn(out1)
+        # ffn_output = self.dropout2(ffn_output)
+        return out1
 
 
 class CycleGAN:
     def __init__(self, row, col):
+        gpus = tf.config.experimental.list_physical_devices('GPU')
+        if gpus:
+            try:
+                # Restrict TensorFlow to only use the fourth GPU
+                tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+
+                # Currently, memory growth needs to be the same across GPUs
+                for gpu in gpus:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+                print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+            except RuntimeError as e:
+                # Memory growth must be set before GPUs have been initialized
+                print(e)
         # Input shape
         self.dataUtils = DataUtils()
         self.img_rows = row
@@ -49,10 +85,10 @@ class CycleGAN:
         # Build and compile the discriminators
         self.d_A = self.build_discriminator()
         self.d_B = self.build_discriminator()
-        self.d_A.compile(loss='mse',
+        self.d_A.compile(loss='mae',
                          optimizer=optimizer,
                          metrics=['accuracy'])
-        self.d_B.compile(loss='mse',
+        self.d_B.compile(loss='mae',
                          optimizer=optimizer,
                          metrics=['accuracy'])
 
@@ -62,8 +98,8 @@ class CycleGAN:
         # -------------------------
 
         # Build the generators
-        self.g_AB = self.build_generator("tanh")
-        self.g_BA = self.build_generator("tanh")
+        self.g_AB = self.build_generator("relu")
+        self.g_BA = self.build_generator("relu")
 
         # Input images from both domains
         img_A = Input(shape=self.img_shape)
@@ -92,9 +128,9 @@ class CycleGAN:
                               outputs=[valid_A, valid_B,
                                        fake_B, fake_A,
                                        reconstr_A, reconstr_B])
-        self.combined.compile(loss=['mse', 'mse',
-                                    'mae', 'mae',
-                                    'mae', 'mae'],
+        self.combined.compile(loss=['logcosh', 'logcosh',
+                                    'logcosh', 'logcosh', 'logcosh',
+                                    'logcosh'],
                               loss_weights=[1, 1,
                                             self.lambda_cycle, self.lambda_cycle,
                                             self.lambda_id, self.lambda_id],
@@ -113,82 +149,66 @@ class CycleGAN:
     def build_generator(self, outputLayer="relu"):
         """U-Net Generator"""
 
-        def conv2d(layer_input, filters, f_size=7):
+        def conv1DWithLeakyRelu(layer_input, filters, f_size=7):
             """Layers used during downsampling"""
-            d = Conv1D(filters, kernel_size=f_size, padding='same')(layer_input)
-            d = LeakyReLU(alpha=0.2)(d)
-            # d = InstanceNormalization()(d)
+            d = Conv1D(filters, kernel_size=f_size, padding='same', activation=tf.math.sin)(layer_input)
+            d = InstanceNormalization()(d)
             return d
 
-        def deconv2d(layer_input, skip_input, filters, f_size=7, dropout_rate=0):
-            """Layers used during upsampling"""
-            u = UpSampling1D()(layer_input)
-            u = Conv1D(filters, kernel_size=f_size, strides=2, padding='same')(u)
-            u = LeakyReLU(alpha=0.2)(u)
-            if dropout_rate:
-                u = Dropout(dropout_rate)(u)
-            # u = InstanceNormalization()(u)
-            # u = Concatenate()([u, skip_input])
-            return u
-
         def multiply(x):
+            mask,image  = x
+            # mask = K.expand_dims(mask, axis=-1)  # could be K.stack([mask]*3, axis=-1) too
+            return image* K.clip(mask,0.8,1)
+
+        def difference(x):
             image, mask = x
             # mask = K.expand_dims(mask, axis=-1)  # could be K.stack([mask]*3, axis=-1) too
-            return mask * image
+            return image - mask
 
-        # Image input
-        d0 = Input(shape=self.img_shape)
-        shape = K.int_shape(d0)
-        # dauto = Lambda(autoCorr)(d0)
-        # # Downsampling
-        d1 = conv2d(d0, 4)
-        d2 = conv2d(d1, 2)
-        d3 = conv2d(d2, 1)
-        # d3_1 = conv2d(d0, 4)
-        # d2 = GRU(64, return_sequences=True)(d3)
-        x = Flatten()(d3)
-        mask = Dense(50)(x)
-        mask = UpSampling1D(4)(mask)
-        mask = ThresholdedReLU(theta=.5)(mask)
-        x2 = Concatenate()([mask, mask, mask, mask])
-        u2 = Reshape((shape[1], shape[2]))(x2)
+        def reshapeFunc(x):
+            return K.reshape(x, [-1, 200, 1])
 
-        # subtracted = Subtract()([x1, x2])
-        # u2 = Conv1D(4, 5, activation="sigmoid", padding='same')(u2)
+        input = Input(shape=self.img_shape)
+        # value = Lambda(reshapeTo)(input)
+        value = conv1DWithLeakyRelu(input, 1, f_size=30)
+        # lstm = Bidirectional(LSTM(units=8, return_sequences=True))(input)
+        # lstm = conv1DWithLeakyRelu(lstm, 4)
+        # lstm = conv1DWithLeakyRelu(lstm, 1)
 
-        dmul = Lambda(multiply)([u2, d0])
+        att = TransformerBlock(200, 2, 8)(value)
+        att = Normalization(axis=1)(att)
+        # mask = LeakyReLU(0.9)(att)
+        remainedInput = Lambda(multiply)([att, value])
+        # remainedInput = GlobalAveragePooling1D()(remainedInput)
+        # remainedInput = Lambda(reshapeFunc)(remainedInput)
+        # value = Lambda(difference)([remainedInput, input])
+        output_img = conv1DWithLeakyRelu(remainedInput, 13, f_size=3)
+        output_img = conv1DWithLeakyRelu(output_img, 7, f_size=5)
+        output_img = conv1DWithLeakyRelu(output_img, 5, f_size=13)
+        output_img = conv1DWithLeakyRelu(output_img, 1, f_size=3)
 
-        # d3 = AttentionDecoder(32, 16)(d0)
-        # Upsampling
-
-        u4 = deconv2d(dmul, u2, 4)
-        # u2 = deconv2d(u3, d3, self.gf)
-        # u4 = GRU(16, return_sequences=True)(u3)
-        # output_img = Conv2D(1, 3, padding="same",str activation=outputLayer)(u4)
-        u4 = InstanceNormalization()(u4)
-        u4 = Conv1D(4, kernel_size=7, padding='same', activation='relu')(u4)
-        output_img = Conv1D(4, kernel_size=7, padding='same', activation=outputLayer)(u4)
+        # output_img = Lambda(multiply)([mask, value])
 
         # output_img = Conv1D(4, kernel_size=2, padding='same', activation=outputLayer)(output_img)
-        return Model(d0, output_img)
+        return Model(input, output_img)
 
     def build_discriminator(self):
 
         def d_layer(layer_input, filters, f_size=4, normalization=True):
             """Discriminator layer"""
-            d = Conv1D(filters, kernel_size=f_size, padding='same')(layer_input)
-            d = LeakyReLU(alpha=0.2)(d)
+            d = Conv1D(filters, kernel_size=f_size, padding='same',activation=tf.math.sin)(layer_input)
             if normalization:
                 d = InstanceNormalization()(d)
             return d
-
+        def activationCustom(x):
+            return K.reshape(x, [-1, 200, 1])
         img = Input(shape=self.img_shape)
 
-        d1 = d_layer(img, self.df, normalization=False)
-        d2 = d_layer(d1, 2)
-        d3 = d_layer(d2, 2)
+        d1 = d_layer(img, self.df)
+        d2 = d_layer(d1, 7)
+        d3 = d_layer(d2, 3)
+        validity = d_layer(d3, 1)
 
-        validity = Conv1D(1, kernel_size=4, padding='same')(d3)
 
         return Model(img, validity)
 
@@ -209,10 +229,12 @@ class CycleGAN:
                 #  Train Discriminators
                 # ----------------------
 
-                # Translate images to opposite domain
+                # Translate images to the other domain
                 fake_B = self.g_AB.predict(imgs_A)
                 fake_A = self.g_BA.predict(imgs_B)
-
+                # Translate images back to original domain
+                reconstr_A = self.g_BA.predict(fake_B)
+                reconstr_B = self.g_AB.predict(fake_A)
                 # Train the discriminators (original images = real / translated = Fake)
                 dA_loss_real = self.d_A.train_on_batch(imgs_A, valid)
                 dA_loss_fake = self.d_A.train_on_batch(fake_A, fake)
@@ -233,7 +255,7 @@ class CycleGAN:
                 g_loss = self.combined.train_on_batch([imgs_A, imgs_B],
                                                       [valid, valid,
                                                        imgs_B, imgs_A,
-                                                       imgs_A, imgs_B])
+                                                       reconstr_A, reconstr_B])
 
                 elapsed_time = datetime.datetime.now() - start_time
 
@@ -282,7 +304,7 @@ class CycleGAN:
         try:
             for i in range(r):
                 for j in range(c):
-                    for bias in range(4):
+                    for bias in range(1):
                         gen_imgs[cnt][:, bias] = scale(self.dataUtils.butter_bandpass_filter(gen_imgs[cnt][:, bias], 10, 50, 200, axis=0), axis=0)
                         if np.max(gen_imgs[cnt][:, bias]) != 0:
                             gen_imgs[cnt][:, bias] = gen_imgs[cnt][:, bias] / np.max(gen_imgs[cnt][:, bias])

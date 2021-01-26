@@ -252,7 +252,7 @@ class AttentionDecoder(Recurrent):
                                              timesteps=self.timesteps,
                                              output_dim=self.units)
 
-        return super(AttentionDecoder, self).call(x)
+        return super(AttentionDecoder, self).call(x, )
 
     def get_initial_state(self, inputs):
         # apply the matrix on the first time step to get the initial s0.

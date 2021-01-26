@@ -5,6 +5,7 @@ from Utils.TrainUtils import TrainUtils
 from deeplearning.CycleGAN import CycleGAN
 
 
+
 class TestCycleGAN(TestCase):
 
     def __init__(self, methodName: str = ...) -> None:
@@ -12,7 +13,7 @@ class TestCycleGAN(TestCase):
         self.trainUtils = TrainUtils()
 
     def test_trainSignal(self):
-        ecgWindows, fecgWindows = self.trainUtils.prepareData(delay=2)
+        ecgWindows, fecgWindows = self.trainUtils.prepareData(delay=5)
         X_train, X_test, Y_train, Y_test = self.trainUtils.trainTestSplit(ecgWindows, fecgWindows, 0.75)
 
         X_train = np.reshape(X_train, [-1, X_train.shape[1], X_train.shape[2]])
@@ -22,3 +23,4 @@ class TestCycleGAN(TestCase):
 
         cycleGAN = CycleGAN(Y_train.shape[1], Y_train.shape[2])
         cycleGAN.train(x_train=X_train, y_train=Y_train, epochs=5)
+
