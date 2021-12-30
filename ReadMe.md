@@ -9,5 +9,5 @@ Bottom left: Original scalp FECG<br>
 Bottom middle: generated MECG without any postprocessing<br>
 
 
-##Reference:
+## Reference:
 Mohebian, M.R., shahim Vedaei, S., Wahid, K.A., Dinh, A., Marateb, H.R. and Tavakolian, K., 2021. Fetal ECG Extraction from Maternal ECG using Attention-based CycleGAN. IEEE Journal of Biomedical and Health Informatics.
