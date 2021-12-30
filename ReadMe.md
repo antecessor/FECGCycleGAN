@@ -2,11 +2,12 @@ For training the model use code in test.test_CycleGAN
 
 ![alt text](https://github.com/antecessor/FECGCycleGAN/blob/master/4_60.png)
 
-<br>
+
 Top left: MECG <br>
 Top middle: extracted FECG before SG filter<br>
 Bottom left: Original scalp FECG<br>
 Bottom middle: generated MECG without any postprocessing<br>
 
-<br>
-Reference: <br> Mohebbian, M.R., Vedaei, S.S., Wahid, K.A., Dinh, A. and Marateb, H.R., 2020. Fetal ECG Extraction from Maternal ECG using attention-based Asymmetric CycleGAN. arXiv preprint arXiv:2011.12138.
+
+##Reference:
+Mohebian, M.R., shahim Vedaei, S., Wahid, K.A., Dinh, A., Marateb, H.R. and Tavakolian, K., 2021. Fetal ECG Extraction from Maternal ECG using Attention-based CycleGAN. IEEE Journal of Biomedical and Health Informatics.
